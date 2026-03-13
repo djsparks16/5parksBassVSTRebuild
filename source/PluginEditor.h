@@ -3,40 +3,27 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
+
 #include "PluginProcessor.h"
 
-class BlacksidePage : public juce::Component
+class ScopeComponent : public juce::Component, private juce::Timer
 {
 public:
-    explicit BlacksidePage(const juce::String& titleToShow) : title(titleToShow) {}
-
-    void paint(juce::Graphics& g) override
+    explicit ScopeComponent(BadlineDnBAudioProcessor& p) : processor(p)
     {
-        auto r = getLocalBounds().toFloat().reduced(16.0f);
-        g.setColour(juce::Colour(0xff121318));
-        g.fillRoundedRectangle(r, 22.0f);
-        g.setColour(juce::Colour(0x33d8f8ff));
-        g.drawRoundedRectangle(r, 22.0f, 1.0f);
-        g.setColour(juce::Colours::white.withAlpha(0.95f));
-        g.setFont(juce::FontOptions(22.0f, juce::Font::bold));
-        g.drawText(title, r.reduced(24.0f).toNearestInt(), juce::Justification::topLeft, false);
+        startTimerHz(30);
     }
 
-private:
-    juce::String title;
-};
-
-class MacroStrip : public juce::Component
-{
-public:
-    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-
-    explicit MacroStrip(juce::AudioProcessorValueTreeState& state);
-    void resized() override;
+    void paint(juce::Graphics& g) override;
+    void resized() override {}
 
 private:
-    std::array<juce::Slider, 8> sliders;
-    std::array<std::unique_ptr<SliderAttachment>, 8> attachments;
+    void timerCallback() override;
+
+    BadlineDnBAudioProcessor& processor;
+    std::array<float, 512> scopeData {};
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScopeComponent)
 };
 
 class BadlineDnBAudioProcessorEditor  : public juce::AudioProcessorEditor,
@@ -50,25 +37,41 @@ public:
     void resized() override;
 
 private:
+    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+
     enum class Page { Sound, Motion, Tone, Perform };
 
-    void switchPage(Page newPage);
     void timerCallback() override;
+    void switchPage(Page newPage);
 
-    BadlineDnBAudioProcessor& processor;
+    BadlineDnBAudioProcessor& audioProcessor;
     Page currentPage = Page::Sound;
 
-    juce::TextButton soundBtn {"Sound"};
-    juce::TextButton motionBtn {"Motion"};
-    juce::TextButton toneBtn {"Tone"};
-    juce::TextButton performBtn {"Perform"};
+    juce::TextButton soundBtn   { "Sound" };
+    juce::TextButton motionBtn  { "Motion" };
+    juce::TextButton toneBtn    { "Tone" };
+    juce::TextButton performBtn { "Perform" };
 
-    BlacksidePage soundPage {"Sound Lab"};
-    BlacksidePage motionPage {"Motion Matrix"};
-    BlacksidePage tonePage {"Tone Forge"};
-    BlacksidePage performPage {"Performance"};
+    juce::Component soundPage;
+    juce::Component motionPage;
+    juce::Component tonePage;
+    juce::Component performPage;
 
-    MacroStrip macroStrip;
+    ScopeComponent scope;
+
+    juce::Slider macro1, macro2, macro3, macro4;
+    juce::Slider cutoff, res, drive;
+    juce::Slider glide;
+    juce::ComboBox playMode;
+    juce::ComboBox notePriority;
+
+    std::unique_ptr<SliderAttachment> macro1Att, macro2Att, macro3Att, macro4Att;
+    std::unique_ptr<SliderAttachment> cutoffAtt, resAtt, driveAtt, glideAtt;
+    std::unique_ptr<ComboBoxAttachment> playModeAtt, notePriorityAtt;
+
+    void setupKnob(juce::Slider& s);
+    void styleTab(juce::TextButton& b);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BadlineDnBAudioProcessorEditor)
 };
