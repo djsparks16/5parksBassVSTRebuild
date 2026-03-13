@@ -11,6 +11,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout
 BadlineDnBAudioProcessor::createParameters()
 {
     using APF = juce::AudioParameterFloat;
+    using APC = juce::AudioParameterChoice;
+
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> p;
 
     auto norm = [](const juce::String& id, const juce::String& name,
@@ -21,6 +23,12 @@ BadlineDnBAudioProcessor::createParameters()
             juce::NormalisableRange<float>(min, max, 0.0f, skew),
             def);
     };
+
+    p.push_back(std::make_unique<APC>("play_mode", "Play Mode",
+                                      juce::StringArray { "Mono", "Legato", "Poly" }, 1));
+    p.push_back(std::make_unique<APC>("note_priority", "Note Priority",
+                                      juce::StringArray { "Last", "Low", "High" }, 0));
+    p.push_back(norm("glide_ms", "Glide", 0.0f, 500.0f, 45.0f, 0.35f));
 
     p.push_back(norm("oscA_level","OscA Level",0.0f,1.0f,0.85f));
     p.push_back(norm("oscA_wave","OscA Wave",0.0f,1.0f,0.30f));
@@ -70,9 +78,17 @@ BadlineDnBAudioProcessor::createParameters()
 void BadlineDnBAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     juce::ignoreUnused(samplesPerBlock);
-    voice.prepare(sampleRate);
+
+    for (auto& v : voices)
+        v.prepare(sampleRate);
+
+    keyDown.fill(false);
+    sustained.fill(false);
+    monoStack.clear();
+    sustainPedalDown = false;
     meterLevel.store(0.0f);
     subMeterLevel.store(0.0f);
+    scopeWritePos.store(0);
 }
 
 void BadlineDnBAudioProcessor::releaseResources()
@@ -89,43 +105,71 @@ void BadlineDnBAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
+    const auto playModeValue = apvts.getRawParameterValue("play_mode")->load();
+    const auto priorityValue = apvts.getRawParameterValue("note_priority")->load();
+
+    const PlayMode playMode = static_cast<PlayMode>((int) playModeValue);
+    const NotePriority priority = static_cast<NotePriority>((int) priorityValue);
+
     for (const auto metadata : midi)
     {
         const auto msg = metadata.getMessage();
-        if (msg.isNoteOn()) voice.start(msg.getNoteNumber(), msg.getFloatVelocity());
-        if (msg.isNoteOff()) voice.stop();
+
+        if (msg.isController() && msg.getControllerNumber() == 64)
+        {
+            handleSustainPedal(msg.getControllerValue() >= 64, playMode);
+            continue;
+        }
+
+        if (msg.isNoteOn())
+            handleNoteOn(msg.getNoteNumber(), msg.getFloatVelocity(), playMode);
+
+        if (msg.isNoteOff())
+            handleNoteOff(msg.getNoteNumber(), playMode);
+
+        if (msg.isAllNotesOff() || msg.isAllSoundOff())
+        {
+            for (auto& v : voices)
+                v.stop();
+            keyDown.fill(false);
+            sustained.fill(false);
+            monoStack.clear();
+            sustainPedalDown = false;
+        }
     }
 
-    const float oscALevel = apvts.getRawParameterValue("oscA_level")->load();
-    const float oscAWave = apvts.getRawParameterValue("oscA_wave")->load();
-    const float oscAWarp = apvts.getRawParameterValue("oscA_warp")->load();
+    const float glideMs = apvts.getRawParameterValue("glide_ms")->load();
+
+    const float oscALevel  = apvts.getRawParameterValue("oscA_level")->load();
+    const float oscAWave   = apvts.getRawParameterValue("oscA_wave")->load();
+    const float oscAWarp   = apvts.getRawParameterValue("oscA_warp")->load();
     const float oscASpread = apvts.getRawParameterValue("oscA_spread")->load();
 
-    const float oscBLevel = apvts.getRawParameterValue("oscB_level")->load();
-    const float oscBWave = apvts.getRawParameterValue("oscB_wave")->load();
-    const float oscBWarp = apvts.getRawParameterValue("oscB_warp")->load();
+    const float oscBLevel  = apvts.getRawParameterValue("oscB_level")->load();
+    const float oscBWave   = apvts.getRawParameterValue("oscB_wave")->load();
+    const float oscBWarp   = apvts.getRawParameterValue("oscB_warp")->load();
     const float oscBSpread = apvts.getRawParameterValue("oscB_spread")->load();
 
-    const float oscCLevel = apvts.getRawParameterValue("oscC_level")->load();
-    const float oscCWave = apvts.getRawParameterValue("oscC_wave")->load();
-    const float oscCWarp = apvts.getRawParameterValue("oscC_warp")->load();
+    const float oscCLevel  = apvts.getRawParameterValue("oscC_level")->load();
+    const float oscCWave   = apvts.getRawParameterValue("oscC_wave")->load();
+    const float oscCWarp   = apvts.getRawParameterValue("oscC_warp")->load();
 
-    const float subLevel = apvts.getRawParameterValue("sub_level")->load();
-    const float subDrive = apvts.getRawParameterValue("sub_drive")->load();
+    const float subLevel   = apvts.getRawParameterValue("sub_level")->load();
+    const float subDrive   = apvts.getRawParameterValue("sub_drive")->load();
     const float noiseLevel = apvts.getRawParameterValue("noise_level")->load();
 
     const float cutoff1 = apvts.getRawParameterValue("filter_cutoff")->load();
-    const float res1 = apvts.getRawParameterValue("filter_res")->load();
-    const float drive1 = apvts.getRawParameterValue("filter_drive")->load();
+    const float res1    = apvts.getRawParameterValue("filter_res")->load();
+    const float drive1  = apvts.getRawParameterValue("filter_drive")->load();
     const float cutoff2 = apvts.getRawParameterValue("filter2_cutoff")->load();
-    const float res2 = apvts.getRawParameterValue("filter2_res")->load();
+    const float res2    = apvts.getRawParameterValue("filter2_res")->load();
 
     const float distDrive = apvts.getRawParameterValue("dist_drive")->load();
-    const float distMix = apvts.getRawParameterValue("dist_mix")->load();
+    const float distMix   = apvts.getRawParameterValue("dist_mix")->load();
 
     const float lfoRate = apvts.getRawParameterValue("lfo1_rate")->load();
-    const float lfoAmt = apvts.getRawParameterValue("lfo1_amt")->load();
-    const float envAmt = apvts.getRawParameterValue("envamt")->load();
+    const float lfoAmt  = apvts.getRawParameterValue("lfo1_amt")->load();
+    const float envAmt  = apvts.getRawParameterValue("envamt")->load();
 
     const float envA = apvts.getRawParameterValue("envA")->load();
     const float envD = apvts.getRawParameterValue("envD")->load();
@@ -136,27 +180,56 @@ void BadlineDnBAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     const float macro2 = apvts.getRawParameterValue("macro2")->load();
     const float master = apvts.getRawParameterValue("master_gain")->load();
 
-    voice.updateADSR(envA, envD, envS, envR);
+    for (auto& v : voices)
+    {
+        v.setGlideMs(glideMs);
+        v.updateADSR(envA, envD, envS, envR);
+    }
 
     float peak = 0.0f;
     float subPeak = 0.0f;
 
     for (int i = 0; i < buffer.getNumSamples(); ++i)
     {
-        float s = voice.nextSample(
-            oscALevel, oscAWave, oscAWarp, oscASpread,
-            oscBLevel, oscBWave, oscBWarp, oscBSpread,
-            oscCLevel, oscCWave, oscCWarp,
-            subLevel, subDrive, noiseLevel,
-            cutoff1, res1, drive1,
-            cutoff2, res2,
-            distDrive, distMix,
-            lfoRate, lfoAmt, envAmt,
-            macro1, macro2);
+        float s = 0.0f;
+
+        if (playMode == PlayMode::poly)
+        {
+            for (auto& v : voices)
+            {
+                s += v.nextSample(
+                    oscALevel, oscAWave, oscAWarp, oscASpread,
+                    oscBLevel, oscBWave, oscBWarp, oscBSpread,
+                    oscCLevel, oscCWave, oscCWarp,
+                    subLevel, subDrive, noiseLevel,
+                    cutoff1, res1, drive1,
+                    cutoff2, res2,
+                    distDrive, distMix,
+                    lfoRate, lfoAmt, envAmt,
+                    macro1, macro2);
+            }
+            s *= 0.30f;
+        }
+        else
+        {
+            s = voices[0].nextSample(
+                oscALevel, oscAWave, oscAWarp, oscASpread,
+                oscBLevel, oscBWave, oscBWarp, oscBSpread,
+                oscCLevel, oscCWave, oscCWarp,
+                subLevel, subDrive, noiseLevel,
+                cutoff1, res1, drive1,
+                cutoff2, res2,
+                distDrive, distMix,
+                lfoRate, lfoAmt, envAmt,
+                macro1, macro2);
+        }
 
         s *= master;
+
         peak = juce::jmax(peak, std::abs(s));
-        subPeak = juce::jmax(subPeak, std::abs(std::sin(voice.subOsc.phase * juce::MathConstants<float>::twoPi) * subLevel));
+        subPeak = juce::jmax(subPeak, std::abs(s) * subLevel);
+
+        pushScopeSample(s);
 
         for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
             buffer.setSample(ch, i, s);
@@ -182,6 +255,199 @@ void BadlineDnBAudioProcessor::setStateInformation (const void* data, int sizeIn
 juce::AudioProcessorEditor* BadlineDnBAudioProcessor::createEditor()
 {
     return new BadlineDnBAudioProcessorEditor(*this);
+}
+
+void BadlineDnBAudioProcessor::copyScopeData(std::array<float, 512>& dest) const noexcept
+{
+    const int write = scopeWritePos.load();
+    const int size = (int) scopeRing.size();
+
+    for (int i = 0; i < (int) dest.size(); ++i)
+    {
+        const int index = (write - (int) dest.size() + i + size) % size;
+        dest[(size_t) i] = scopeRing[(size_t) index];
+    }
+}
+
+void BadlineDnBAudioProcessor::handleNoteOn(int note, float velocity, PlayMode mode)
+{
+    keyDown[(size_t) note] = true;
+    sustained[(size_t) note] = false;
+
+    monoStack.erase(std::remove(monoStack.begin(), monoStack.end(), note), monoStack.end());
+    monoStack.push_back(note);
+
+    if (mode == PlayMode::poly)
+    {
+        const auto priority = static_cast<NotePriority>((int) apvts.getRawParameterValue("note_priority")->load());
+        startPolyVoice(note, velocity, priority);
+        return;
+    }
+
+    const bool legatoMode = (mode == PlayMode::legato);
+    const bool alreadyActive = voices[0].active;
+
+    if (legatoMode && alreadyActive)
+        voices[0].legatoTo(note, velocity);
+    else
+        startMonoVoice(note, velocity, true);
+}
+
+void BadlineDnBAudioProcessor::handleNoteOff(int note, PlayMode mode)
+{
+    keyDown[(size_t) note] = false;
+
+    if (sustainPedalDown)
+    {
+        sustained[(size_t) note] = true;
+        if (mode == PlayMode::poly)
+        {
+            const int idx = findVoiceForNote(note);
+            if (idx >= 0)
+                voices[(size_t) idx].heldBySustain = true;
+        }
+        return;
+    }
+
+    if (mode == PlayMode::poly)
+    {
+        releasePolyNote(note);
+        return;
+    }
+
+    monoStack.erase(std::remove(monoStack.begin(), monoStack.end(), note), monoStack.end());
+    retriggerMonoFromStack();
+}
+
+void BadlineDnBAudioProcessor::handleSustainPedal(bool down, PlayMode mode)
+{
+    sustainPedalDown = down;
+
+    if (down)
+        return;
+
+    for (int note = 0; note < 128; ++note)
+    {
+        if (sustained[(size_t) note] && ! keyDown[(size_t) note])
+        {
+            sustained[(size_t) note] = false;
+
+            if (mode == PlayMode::poly)
+                releasePolyNote(note);
+        }
+    }
+
+    if (mode != PlayMode::poly)
+        retriggerMonoFromStack();
+}
+
+void BadlineDnBAudioProcessor::startMonoVoice(int note, float velocity, bool retrigger)
+{
+    voices[0].start(note, velocity, retrigger);
+}
+
+void BadlineDnBAudioProcessor::retriggerMonoFromStack()
+{
+    if (monoStack.empty())
+    {
+        releaseMonoIfIdle();
+        return;
+    }
+
+    int nextNote = monoStack.back();
+
+    if (sustainPedalDown && sustained[(size_t) nextNote])
+        return;
+
+    if (voices[0].active)
+        voices[0].legatoTo(nextNote, 1.0f);
+    else
+        voices[0].start(nextNote, 1.0f, true);
+}
+
+void BadlineDnBAudioProcessor::releaseMonoIfIdle()
+{
+    bool anyHeld = false;
+    for (bool k : keyDown)
+        anyHeld = anyHeld || k;
+
+    if (! anyHeld)
+        voices[0].stop();
+}
+
+int BadlineDnBAudioProcessor::findFreeVoice() const
+{
+    for (int i = 0; i < maxVoices; ++i)
+        if (! voices[(size_t) i].active)
+            return i;
+    return -1;
+}
+
+int BadlineDnBAudioProcessor::findVoiceForNote(int note) const
+{
+    for (int i = 0; i < maxVoices; ++i)
+        if (voices[(size_t) i].active && voices[(size_t) i].midiNote == note)
+            return i;
+    return -1;
+}
+
+int BadlineDnBAudioProcessor::stealVoice(NotePriority priority) const
+{
+    int candidate = 0;
+
+    if (priority == NotePriority::low)
+    {
+        int lowest = 127;
+        for (int i = 0; i < maxVoices; ++i)
+        {
+            if (voices[(size_t) i].midiNote < lowest)
+            {
+                lowest = voices[(size_t) i].midiNote;
+                candidate = i;
+            }
+        }
+    }
+    else if (priority == NotePriority::high)
+    {
+        int highest = -1;
+        for (int i = 0; i < maxVoices; ++i)
+        {
+            if (voices[(size_t) i].midiNote > highest)
+            {
+                highest = voices[(size_t) i].midiNote;
+                candidate = i;
+            }
+        }
+    }
+    else
+    {
+        candidate = 0;
+    }
+
+    return candidate;
+}
+
+void BadlineDnBAudioProcessor::startPolyVoice(int note, float velocity, NotePriority priority)
+{
+    int idx = findFreeVoice();
+    if (idx < 0)
+        idx = stealVoice(priority);
+
+    voices[(size_t) idx].start(note, velocity, true);
+}
+
+void BadlineDnBAudioProcessor::releasePolyNote(int note)
+{
+    const int idx = findVoiceForNote(note);
+    if (idx >= 0)
+        voices[(size_t) idx].stop();
+}
+
+void BadlineDnBAudioProcessor::pushScopeSample(float s) noexcept
+{
+    const int size = (int) scopeRing.size();
+    const int pos = scopeWritePos.fetch_add(1);
+    scopeRing[(size_t) (pos % size)] = s;
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
