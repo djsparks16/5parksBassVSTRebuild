@@ -85,7 +85,7 @@ struct BlacksideVoice
 
     juce::dsp::StateVariableTPTFilter<float> filter1;
     juce::dsp::StateVariableTPTFilter<float> filter2;
-    juce::dsp::LadderFilter<float> ladder;
+    juce::dsp::StateVariableTPTFilter<float> ladder;
 
     float last = 0.0f;
     float dc = 0.0f;
@@ -106,7 +106,7 @@ struct BlacksideVoice
         ladder.prepare(spec);
         filter1.setType(juce::dsp::StateVariableTPTFilterType::lowpass);
         filter2.setType(juce::dsp::StateVariableTPTFilterType::bandpass);
-        ladder.setMode(juce::dsp::LadderFilterMode::LPF24);
+        ladder.setType(juce::dsp::StateVariableTPTFilterType::lowpass);
         reset();
     }
 
@@ -257,7 +257,7 @@ struct BlacksideVoice
         filter1.setResonance(juce::jlimit(0.1f, 1.4f, res1 + reeseWidth * 0.15f));
         filter2.setCutoffFrequency(dynamicCutoff2);
         filter2.setResonance(juce::jlimit(0.1f, 1.2f, res2 + hornBody * 0.12f));
-        ladder.setCutoffFrequencyHz(juce::jlimit(40.0f, 16000.0f, dynamicCutoff1 * (0.7f + hornBody * 0.4f)));
+        ladder.setCutoffFrequency(juce::jlimit(40.0f, 16000.0f, dynamicCutoff1 * (0.7f + hornBody * 0.4f)));
         ladder.setResonance(juce::jlimit(0.1f, 0.95f, 0.2f + screechFm * 0.35f));
 
         x = std::tanh(x * (1.0f + drive1 * 5.5f + screechDrive * 2.5f));
