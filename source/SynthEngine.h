@@ -263,7 +263,7 @@ struct BlacksideVoice
         x = std::tanh(x * (1.0f + drive1 * 5.5f + screechDrive * 2.5f));
         x = filter1.processSample(0, x);
         x += filter2.processSample(0, x) * (0.28f + hornFormant * 0.24f);
-        x = 0.72f * x + 0.28f * ladder.processSample(x);
+        x = 0.72f * x + 0.28f * ladder.processSample(0, x);
 
         const float dirty = std::tanh(x * (1.0f + distDrive * 7.0f + screechDrive * 5.0f));
         x = juce::jmap(distMix, x, dirty);
