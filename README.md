@@ -1,6 +1,6 @@
-# Blackside Bass v0.2.1 Fixed
+# Backside Bass v0.2.1 Fixed
 
-This is a corrected rebuild of the Blackside Bass foundation pack.
+This is a corrected rebuild of the Backside Bass foundation pack.
 
 ## Corrections applied
 - kept the project **VST3-only**
@@ -16,8 +16,8 @@ This is a corrected rebuild of the Blackside Bass foundation pack.
 1. Create a new GitHub repo.
 2. Upload every file from this folder.
 3. Confirm `.github/workflows/build.yml` exists.
-4. Wait for **Build Blackside Bass** in Actions.
-5. Download the `BlacksideBass-build` artifact.
+4. Wait for **Build Backside Bass** in Actions.
+5. Download the `BacksideBass-build` artifact.
 
 ## Install in Reason
 Copy the built `.vst3` into:
@@ -29,4 +29,4 @@ Then in Reason:
 `Edit -> Preferences -> Plug-ins -> Rescan`
 
 ## Notes
-This is still a **foundation build**, not the final flagship. It is intended to be a cleaner, more reliable base for the next Blackside Bass upgrades.
+This is still a **foundation build**, not the final flagship. It is intended to be a cleaner, more reliable base for the next Backside Bass upgrades.
