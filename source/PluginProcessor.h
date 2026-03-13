@@ -4,6 +4,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 #include <atomic>
+#include <array>
+#include <vector>
 
 #include "SynthEngine.h"
 
@@ -39,13 +41,45 @@ public:
     float getMeterLevel() const noexcept { return meterLevel.load(); }
     float getSubMeterLevel() const noexcept { return subMeterLevel.load(); }
 
+    void copyScopeData(std::array<float, 512>& dest) const noexcept;
+
     juce::AudioProcessorValueTreeState apvts;
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameters();
 
 private:
-    BlacksideVoice voice;
+    enum class PlayMode { mono = 0, legato = 1, poly = 2 };
+    enum class NotePriority { last = 0, low = 1, high = 2 };
+
+    static constexpr int maxVoices = 8;
+    std::array<BlacksideVoice, maxVoices> voices {};
+
+    std::array<bool, 128> keyDown {};
+    std::array<bool, 128> sustained {};
+    std::vector<int> monoStack;
+
+    bool sustainPedalDown = false;
+
     std::atomic<float> meterLevel { 0.0f };
     std::atomic<float> subMeterLevel { 0.0f };
+
+    std::array<float, 2048> scopeRing {};
+    std::atomic<int> scopeWritePos { 0 };
+
+    void handleNoteOn(int note, float velocity, PlayMode mode);
+    void handleNoteOff(int note, PlayMode mode);
+    void handleSustainPedal(bool down, PlayMode mode);
+
+    void startMonoVoice(int note, float velocity, bool retrigger);
+    void retriggerMonoFromStack();
+    void releaseMonoIfIdle();
+
+    int findFreeVoice() const;
+    int findVoiceForNote(int note) const;
+    int stealVoice(NotePriority priority) const;
+    void startPolyVoice(int note, float velocity, NotePriority priority);
+    void releasePolyNote(int note);
+
+    void pushScopeSample(float s) noexcept;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BadlineDnBAudioProcessor)
 };
