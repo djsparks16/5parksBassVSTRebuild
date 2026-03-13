@@ -13,10 +13,15 @@ struct BlacksideOscillator
     float wavePos = 0.0f;
     float warp = 0.0f;
 
-    void prepare(double sr) { sampleRate = sr; phase = 0.0f; }
+    void prepare(double sr)
+    {
+        sampleRate = sr;
+        phase = 0.0f;
+    }
+
     void setFrequency(float hz) { frequency = hz; }
-    void setWavePos(float p) { wavePos = juce::jlimit(0.0f, 1.0f, p); }
-    void setWarp(float w) { warp = juce::jlimit(0.0f, 1.0f, w); }
+    void setWavePos(float p)    { wavePos = juce::jlimit(0.0f, 1.0f, p); }
+    void setWarp(float w)       { warp = juce::jlimit(0.0f, 1.0f, w); }
 
     float process(float phaseOffset = 0.0f)
     {
@@ -27,15 +32,15 @@ struct BlacksideOscillator
 
         float p = phase + phaseOffset;
         if (p >= 1.0f) p -= 1.0f;
-        if (p < 0.0f) p += 1.0f;
+        if (p < 0.0f)  p += 1.0f;
 
-        auto sineFn = [p]() { return std::sin(p * juce::MathConstants<float>::twoPi); };
-        auto sawFn = [p]() { return 2.0f * p - 1.0f; };
-        auto triFn = [p]() { return 4.0f * std::abs(p - 0.5f) - 1.0f; };
+        auto sineFn   = [p]() { return std::sin(p * juce::MathConstants<float>::twoPi); };
+        auto sawFn    = [p]() { return 2.0f * p - 1.0f; };
+        auto triFn    = [p]() { return 4.0f * std::abs(p - 0.5f) - 1.0f; };
         auto squareFn = [p]() { return p < 0.5f ? 1.0f : -1.0f; };
 
-        const float sel = juce::jlimit(0.0f, 0.999f, wavePos) * 3.0f;
-        const int mode = (int) sel;
+        const float sel  = juce::jlimit(0.0f, 0.999f, wavePos) * 3.0f;
+        const int mode   = (int) sel;
         const float frac = sel - (float) mode;
 
         auto wave = [&](int m)
@@ -59,11 +64,14 @@ struct BlacksideVoice
 {
     double sampleRate = 44100.0;
     bool active = false;
+    bool heldBySustain = false;
     int midiNote = -1;
     float velocity = 0.0f;
+
     float currentHz = 110.0f;
-    float targetHz = 110.0f;
-    float lfoPhase = 0.0f;
+    float targetHz  = 110.0f;
+    float glideMs   = 45.0f;
+    float lfoPhase  = 0.0f;
 
     BlacksideOscillator oscA;
     BlacksideOscillator oscB;
@@ -106,12 +114,20 @@ struct BlacksideVoice
         filter2.reset();
         last = 0.0f;
         lfoPhase = 0.0f;
+        active = false;
+        heldBySustain = false;
+        midiNote = -1;
+    }
+
+    void setGlideMs(float ms)
+    {
+        glideMs = juce::jlimit(0.0f, 500.0f, ms);
     }
 
     void updateADSR(float a, float d, float s, float r)
     {
-        ampParams.attack = a;
-        ampParams.decay = d;
+        ampParams.attack  = a;
+        ampParams.decay   = d;
         ampParams.sustain = s;
         ampParams.release = r;
         modParams = ampParams;
@@ -119,15 +135,30 @@ struct BlacksideVoice
         modEnv.setParameters(modParams);
     }
 
-    void start(int note, float vel)
+    void start(int note, float vel, bool retriggerEnvelope)
+    {
+        midiNote  = note;
+        velocity  = vel;
+        targetHz  = (float) juce::MidiMessage::getMidiNoteInHertz(note);
+
+        if (! active)
+            currentHz = targetHz;
+
+        if (retriggerEnvelope || ! active)
+        {
+            ampEnv.noteOn();
+            modEnv.noteOn();
+        }
+
+        active = true;
+        heldBySustain = false;
+    }
+
+    void legatoTo(int note, float vel)
     {
         midiNote = note;
         velocity = vel;
         targetHz = (float) juce::MidiMessage::getMidiNoteInHertz(note);
-        if (! active)
-            currentHz = targetHz;
-        ampEnv.noteOn();
-        modEnv.noteOn();
         active = true;
     }
 
@@ -135,6 +166,7 @@ struct BlacksideVoice
     {
         ampEnv.noteOff();
         modEnv.noteOff();
+        heldBySustain = false;
     }
 
     float nextSample(float oscALevel, float oscAWave, float oscAWarp, float oscASpread,
@@ -150,7 +182,12 @@ struct BlacksideVoice
         if (! active)
             return 0.0f;
 
-        currentHz += (targetHz - currentHz) * 0.0045f;
+        const float glideCoeff =
+            (glideMs <= 0.0f)
+                ? 1.0f
+                : (1.0f - std::exp(-1.0f / (0.001f * glideMs * (float) sampleRate)));
+
+        currentHz += (targetHz - currentHz) * glideCoeff;
 
         oscA.setFrequency(currentHz);
         oscB.setFrequency(currentHz * (1.0f + oscBSpread * 0.015f));
@@ -198,6 +235,7 @@ struct BlacksideVoice
 
         const float dirty = std::tanh(x * (1.0f + distDrive * 8.0f));
         x = juce::jmap(distMix, x, dirty);
+
         x = 0.85f * x + 0.15f * last;
         last = x;
 
@@ -206,6 +244,7 @@ struct BlacksideVoice
         if (! ampEnv.isActive())
         {
             active = false;
+            heldBySustain = false;
             midiNote = -1;
         }
 
