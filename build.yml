@@ -1,8 +1,4 @@
-name: Upload Artifact
-uses: actions/upload-artifact@v4
-with:
-name: BlacksideBass
-path: build/BlacksideBass_artefacts/Release/VST3
+name: Build Blackside Bass
 
 on:
   push:
@@ -17,16 +13,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Clone JUCE
-        run: git clone https://github.com/juce-framework/JUCE.git
+        run: git clone --depth 1 https://github.com/juce-framework/JUCE.git
 
       - name: Configure CMake
         run: cmake -B build -S . -DJUCE_DIR=JUCE
 
-      - name: Build plugin
-        run: cmake --build build --config Release
+      - name: Build VST3 target
+        run: cmake --build build --config Release --target BlacksideBass_VST3
 
-      - name: Upload Artifact
+      - name: Upload VST3 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BlacksideBass
+          name: BlacksideBass-VST3
           path: build/BlacksideBass_artefacts/Release/VST3
